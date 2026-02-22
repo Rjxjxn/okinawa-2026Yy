@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>2026 沖繩旅遊小秘書 (V26)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Firebase Compat SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { 
+            from { opacity: 0; transform: translateY(10px); } 
+            to { opacity: 1; transform: translateY(0); } 
+        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        #loading-screen { 
+            position: fixed; inset: 0; background: #0f172a; z-index: 9999; 
+            display: flex; justify-content: center; align-items: center; 
+            flex-direction: column; transition: opacity 0.5s; 
+        }
+    </style>
+</head>
+<body class="bg-[#0f172a] text-slate-100 font-sans pb-24 selection:bg-indigo-500">
+
+    <!-- Loading -->
+    <div id="loading-screen">
+        <div class="animate-spin text-emerald-500 mb-4">
+            <i data-lucide="loader-2" width="48" height="48"></i>
+        </div>
+        <div class="text-slate-400 text-sm" id="loading-text">系統啟動中...</div>
+        <button onclick="App.forceStart()" id="force-btn" class="mt-6 text-xs text-slate-500 border border-slate-700 px-3 py-1 rounded hover:text-white hidden">
+            強制進入
+        </button>
+    </div>
+
+    <!-- Header -->
+    <div class="bg-[#1e293b]/95 backdrop-blur-md shadow-lg sticky top-0 z-30 border-b border-indigo-500/30">
+        <div class="max-w-3xl mx-auto px-4 py-3">
+            <div class="flex justify-between items-center mb-2">
+                <div>
+                    <h1 id="app-title" class="text-lg md:text-2xl font-bold flex items-center gap-2 text-white">
+                        <!-- 由 View 動態渲染 -->
+                    </h1>
+                    <div class="flex items-center gap-3 mt-1">
+                        <span id="weather-widget" class="text-[10px] items-center gap-1 text-slate-300 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-600 hidden"></span>
+                        <span id="cloud-status" class="text-[10px] flex items-center gap-1 transition-colors text-slate-500">
+                            <div class="w-2 h-2 rounded-full bg-slate-500"></div> 連線中...
+                        </span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="App.exportCSV()" class="p-2 rounded-full bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600 hover:text-white transition-all hidden" id="btn-export">
+                        <i data-lucide="download" width="18"></i>
+                    </button>
+                    <button onclick="App.toggleConverter()" class="p-2 rounded-full bg-slate-800 text-slate-400 hover:bg-slate-700 transition-all">
+                        <i data-lucide="calculator" width="18"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 匯率轉換器 -->
+            <div id="converter-panel" class="hidden bg-slate-800/80 rounded-lg p-3 border border-slate-600 mt-2 fade-in">
+                <div class="flex items-center gap-2">
+                    <div class="relative flex-1">
+                        <span class="absolute left-2 top-2 text-xs text-slate-400">🇯🇵 JPY</span>
+                        <input type="number" id="conv-jpy" oninput="App.convertCurrency('jpy')" class="w-full bg-slate-900 border border-slate-600 rounded p-1.5 pt-6 text-white text-right focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <i data-lucide="arrow-right-left" class="text-slate-500" width="16"></i>
+                    <div class="relative flex-1">
+                        <span class="absolute left-2 top-2 text-xs text-slate-400">🇹🇼 TWD</span>
+                        <input type="number" id="conv-twd" oninput="App.convertCurrency('twd')" class="w-full bg-slate-900 border border-slate-600 rounded p-1.5 pt-6 text-white text-right focus:outline-none focus:border-emerald-500">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Content Area -->
+    <main id="main-content" class="max-w-3xl mx-auto px-3 py-4 space-y-5 fade-in"></main>
+
+    <!-- Bottom Navigation -->
+    <nav class="fixed bottom-0 left-0 right-0 bg-[#1e293b]/95 backdrop-blur-md border-t border-slate-700 pb-safe z-40">
+        <div class="flex justify-around max-w-3xl mx-auto" id="bottom-nav-container">
+            <!-- 由 View 動態渲染 -->
+        </div>
+    </nav>
+
+    <script>
+        // ==========================================
+        // 1. 常數定義 (Constants)
+        // ==========================================
+        const CONSTANTS = {
+            FIREBASE_CONFIG: {
+                apiKey: "AIzaSyBvclnyKUkCUzyBnGljSMsg38DfgroRDxg",
+                authDomain: "okinawaonline-64b20.firebaseapp.com",
+                projectId: "okinawaonline-64b20",
+                storageBucket: "okinawaonline-64b20.firebasestorage.app",
+                messagingSenderId: "457339726484",
+                appId: "1:457339726484:web:686abfc9820d6d9c4b2281",
+                measurementId: "G-7XV7V6QXBV"
+            },
+            EXPENSE_CATEGORIES: [
+                { id:'food', name:'餐飲', icon:'utensils', color:'bg-orange-500' },
+                { id:'transport', name:'交通', icon:'bus', color:'bg-blue-500' },
+                { id:'shopping', name:'購物', icon:'shopping-bag', color:'bg-pink-500' },
+                { id:'ticket', name:'門票', icon:'ticket', color:'bg-purple-500' },
+                { id:'hotel', name:'住宿', icon:'home', color:'bg-indigo-500' },
+                { id:'other', name:'其他', icon:'more-horizontal', color:'bg-gray-500' }
+            ],
+            DAYS_STRUCTURE: [
+                { date:"Day 1 (5/25)", title:"虎航早班機 & 美國村", icon:"plane" },
+                { date:"Day 2 (5/26)", title:"藍洞浮潛 & 頂級燒肉", icon:"sun" },
+                { date:"Day 3 (5/27)", title:"北部風光 & 居酒屋", icon:"map-pin" },
+                { date:"Day 4 (5/28)", title:"購物日 & 唐吉訶德", icon:"shopping-bag" },
+                { date:"Day 5 (5/29)", title:"南部悠閒 & 牛排宵夜", icon:"coffee" },
+                { date:"Day 6 (5/30)", title:"Outlet & 機場免稅", icon:"plane" }
+            ],
+            DEFAULT_USERS: [
+                { id:'u1', name:'旅客 A', color:'bg-blue-500', text:'text-blue-400', border:'border-blue-500' },
+                { id:'u2', name:'旅客 B', color:'bg-pink-500', text:'text-pink-400', border:'border-pink-500' },
+                { id:'u3', name:'旅客 C', color:'bg-amber-500', text:'text-amber-400', border:'border-amber-500' },
+                { id:'u4', name:'旅客 D', color:'bg-emerald-500', text:'text-emerald-400', border:'border-emerald-500' }
+            ],
+            TABS: [
+                { id: 'itinerary', name: '行程', icon: 'calendar', title: '2026 沖繩行', titleIcon: 'moon', titleColor: 'text-yellow-300', themeColor: 'text-indigo-400' },
+                { id: 'backup', name: '備案', icon: 'folder-plus', title: '預備行程', titleIcon: 'folder-plus', titleColor: 'text-pink-400', themeColor: 'text-pink-400' },
+                { id: 'recommend', name: '推薦', icon: 'thumbs-up', title: '50選推薦', titleIcon: 'thumbs-up', titleColor: 'text-blue-400', themeColor: 'text-blue-400' },
+                { id: 'split', name: '分帳', icon: 'divide-square', title: '智慧分帳', titleIcon: 'divide-square', titleColor: 'text-amber-400', themeColor: 'text-amber-400' },
+                { id: 'accounting', name: '記帳', icon: 'wifi', title: '雲端記帳', titleIcon: 'wifi', titleColor: 'text-emerald-400', themeColor: 'text-emerald-400' }
+            ],
+            RECOMMEND_SPOTS: [
+                { title:"美麗海水族館", tag:"北部" }, { title:"古宇利島", tag:"北部" },
+                { title:"美國村", tag:"中部" }, { title:"萬座毛", tag:"中部" },
+                { title:"國際通", tag:"南部" }, { title:"瀨長島", tag:"南部" },
+                { title:"暖暮拉麵", tag:"美食" }, { title:"燒肉敘敘苑", tag:"美食" },
+                { title:"Parco City", tag:"購物" }, { title:"唐吉訶德", tag:"購物" }
+            ],
+            DEFAULT_ITINERARY_EVENTS: [
+                { dayIndex:0, events:[{time:"09:20",title:"抵達那霸機場 & 取車",note:"預計出關+取車約1.5小時",cost:"租車費",imgKey:"airport"},{time:"11:30",title:"糸滿魚市場",note:"海鮮生魚片",cost:"¥2000",imgKey:"market"},{time:"15:30",title:"Snoopy Surf Shop",note:"美國村",cost:"",imgKey:"american-village"},{time:"20:00",title:"美國村夜景",note:"日落步道",cost:"",imgKey:"night-view"}] },
+                { dayIndex:1, events:[{time:"08:00",title:"青之洞窟浮潛",note:"真榮田岬",cost:"¥4000",imgKey:"snorkeling"},{time:"11:30",title:"Pizzeria da ENZO",note:"窯烤披薩",cost:"¥2000",imgKey:"pizza"},{time:"19:00",title:"琉球之牛",note:"頂級燒肉",cost:"¥8000",imgKey:"beef"}] },
+                { dayIndex:2, events:[{time:"11:00",title:"古宇利大橋",note:"心形岩",cost:"",imgKey:"bridge"},{time:"14:00",title:"美麗海水族館",note:"黑潮之海",cost:"¥2180",imgKey:"aquarium"},{time:"19:00",title:"阿古豬涮涮鍋",note:"恩納豚",cost:"¥4000",imgKey:"food-taco"}] },
+                { dayIndex:3, events:[{time:"11:00",title:"PARCO CITY",note:"最大百貨",cost:"",imgKey:"parco"},{time:"20:30",title:"唐吉訶德",note:"國際通24H",cost:"",imgKey:"donki"}] },
+                { dayIndex:4, events:[{time:"09:30",title:"波上宮",note:"海邊神社",cost:"¥800",imgKey:"shrine"},{time:"14:00",title:"壺屋通",note:"文青下午茶",cost:"¥1000",imgKey:"coffee"},{time:"22:00",title:"傑克牛排",note:"美式復古",cost:"¥2500",imgKey:"beef"}] },
+                { dayIndex:5, events:[{time:"11:00",title:"Ashibinaa Outlet",note:"最後購物",cost:"",imgKey:"outlet"},{time:"15:00",title:"iias 豐崎",note:"DMM水族館",cost:"",imgKey:"parco"},{time:"19:40",title:"那霸機場",note:"返台",cost:"",imgKey:"airport"}] }
+            ]
+        };
+
+        // ==========================================
+        // 2. 狀態管理 (State)
+        // ==========================================
+        const State = {
+            activeTab: 'itinerary',
+            itineraryEvents: [],
+            backupEvents: [],
+            expenses: [],
+            users: [],
+            rate: 4.65, // 預設匯率
+            expandedExpId: null,
+            selectedUser: 'u1',
+            formAmount: '', 
+            formNote: '', 
+            tempExpCat: 'food',
+            tempExpCurr: 'JPY', 
+            splitAmount: '', 
+            splitPayer: 'u1', 
+            splitTargets: [], 
+            splitCurrency: 'JPY'
+        };
+
+        // ==========================================
+        // 3. 資料庫服務 (Firebase Wrapper)
+        // ==========================================
+        const DB = {
+            refs: {},
+            init() {
+                try {
+                    if (typeof firebase !== 'undefined') {
+                        firebase.initializeApp(CONSTANTS.FIREBASE_CONFIG);
+                        const db = firebase.firestore();
+                        this.refs = {
+                            users: db.collection("config").doc("users"),
+                            expenses: db.collection("expenses"),
+                            itinerary: db.collection("itinerary_events"),
+                            backup: db.collection("backup_events")
+                        };
+                        return true;
+                    }
+                } catch(e) { 
+                    console.error("Firebase 初始化失敗:", e); 
+                }
+                return false;
+            },
+            updateConnectionStatus(isOnline) {
+                const el = document.getElementById('cloud-status');
+                if (!el) return;
+                
+                if (isOnline) {
+                    el.innerHTML = `<div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div> 雲端已連線`;
+                    el.className = "text-[10px] flex items-center gap-1 transition-colors text-emerald-500";
+                } else {
+                    el.innerHTML = `<div class="w-2 h-2 rounded-full bg-red-500"></div> 連線中斷`;
+                    el.className = "text-[10px] flex items-center gap-1 text-red-500";
+                }
+            }
+        };
+
+        // ==========================================
+        // 4. 畫面渲染 (View)
+        // ==========================================
+        const View = {
+            // 輔助函式：更新 DOM 並刷新 Icons
+            updateHTML(elementId, htmlString) {
+                const el = document.getElementById(elementId);
+                if (el) {
+                    el.innerHTML = htmlString;
+                    if (window.lucide) lucide.createIcons();
+                }
+            },
+
+            renderHeader() {
+                const currentTab = CONSTANTS.TABS.find(t => t.id === State.activeTab);
+                
+                // 標題更新
+                const titleHtml = `
+                    <i data-lucide="${currentTab.titleIcon}" class="${currentTab.titleColor}" width="20"></i> 
+                    ${currentTab.title}
+                `;
+                this.updateHTML('app-title', titleHtml);
+                
+                // 匯出按鈕顯示邏輯
+                const btnExport = document.getElementById('btn-export');
+                if (btnExport) {
+                    btnExport.classList.toggle('hidden', State.activeTab !== 'accounting');
+                }
+            },
+
+            renderBottomNav() {
+                const navHtml = CONSTANTS.TABS.map((tab, index) => {
+                    const isActive = State.activeTab === tab.id;
+                    const colorClass = isActive ? tab.themeColor : 'text-slate-500';
+                    const divider = index < CONSTANTS.TABS.length - 1 ? `<div class="w-px bg-slate-700 my-3 opacity-50"></div>` : '';
+                    
+                    return `
+                        <button onclick="App.switchTab('${tab.id}')" class="flex-1 py-4 flex flex-col items-center gap-1 text-[10px] font-medium transition-colors ${colorClass}">
+                            <i data-lucide="${tab.icon}" width="24"></i> ${tab.name}
+                        </button>
+                        ${divider}
+                    `;
+                }).join('');
+                
+                this.updateHTML('bottom-nav-container', navHtml);
+            },
+
+            renderContent() {
+                const container = document.getElementById('main-content');
+                if (!container) return;
+
+                switch (State.activeTab) {
+                    case 'itinerary': this.renderItinerary(container); break;
+                    case 'backup': this.renderBackup(container); break;
+                    case 'recommend': this.renderRecommend(container); break;
+                    case 'split': this.renderSplit(container); break;
+                    case 'accounting': this.renderAccounting(container); break;
+                }
+                if (window.lucide) lucide.createIcons();
+            },
+
+            // --- 具體頁面渲染 ---
+
+            renderItinerary(container) {
+                if (State.itineraryEvents.length === 0) {
+                    container.innerHTML = `
+                        <div class="bg-slate-800 p-6 rounded-xl text-center border border-slate-700 mt-8">
+                            <i data-lucide="cloud-off" class="mx-auto text-slate-500 mb-2" width="48"></i>
+                            <div class="text-white font-bold mb-2">行程是空的</div>
+                            <button onclick="App.uploadDefaultItinerary()" class="bg-indigo-600 text-white px-4 py-2 rounded mt-2">
+                                上傳預設行程
+                            </button>
+                        </div>
+                    `;
+                    return;
+                }
+
+                let html = '';
+                CONSTANTS.DAYS_STRUCTURE.forEach((day, index) => {
+                    // 篩選出當天的行程並依照時間排序
+                    const events = State.itineraryEvents
+                        .filter(e => e.dayIndex === index)
+                        .sort((a, b) => a.time.localeCompare(b.time));
+
+                    let eventsHtml = events.map(e => `
+                        <div class="flex items-center gap-3 p-3 border-b border-slate-700/50 hover:bg-slate-700/30">
+                            <div class="w-12 text-right text-sm font-mono text-indigo-400 font-bold">${e.time}</div>
+                            <div class="flex-1">
+                                <div class="text-sm font-bold text-slate-200">${e.title}</div>
+                                <div class="text-xs text-slate-500">${e.note}</div>
+                            </div>
+                            <button onclick="App.deleteItinerary('${e.id}')" class="text-slate-600 hover:text-red-400 transition-colors">
+                                <i data-lucide="trash-2" width="14"></i>
+                            </button>
+                        </div>
+                    `).join('');
+
+                    if (!eventsHtml) {
+                        eventsHtml = `<div class="p-3 text-center text-xs text-slate-500">無行程</div>`;
+                    }
+
+                    html += `
+                        <div class="bg-[#1e293b] rounded-xl border border-slate-700/60 overflow-hidden mb-4">
+                            <div class="bg-slate-800 px-4 py-2 border-b border-slate-700 flex justify-between items-center">
+                                <span class="font-bold text-indigo-100">${day.date}</span>
+                                <button onclick="App.showAddItinModal(${index})" class="text-indigo-400 hover:text-indigo-300">
+                                    <i data-lucide="plus-circle" width="18"></i>
+                                </button>
+                            </div>
+                            <div>${eventsHtml}</div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            },
+
+            renderBackup(container) {
+                const listHtml = State.backupEvents.map(e => `
+                    <div class="p-3 bg-slate-800 rounded mb-2 border border-slate-700 flex justify-between items-center">
+                        <div>
+                            <div class="font-bold text-sm text-slate-200">${e.title}</div>
+                            <div class="text-xs text-slate-500">${e.note}</div>
+                        </div>
+                        <button onclick="App.deleteBackup('${e.id}')" class="text-slate-600 hover:text-red-400 transition-colors">
+                            <i data-lucide="trash-2" width="14"></i>
+                        </button>
+                    </div>
+                `).join('');
+
+                container.innerHTML = `
+                    <div class="mb-4 flex gap-2">
+                        <input id="bk-title" placeholder="景點名稱" class="bg-slate-800 border border-slate-600 rounded p-2 text-sm w-1/2 focus:border-pink-500 outline-none text-white">
+                        <input id="bk-note" placeholder="備註說明" class="bg-slate-800 border border-slate-600 rounded p-2 text-sm w-1/2 focus:border-pink-500 outline-none text-white">
+                        <button onclick="App.submitBackup()" class="bg-pink-600 hover:bg-pink-500 text-white px-3 rounded transition-colors">
+                            <i data-lucide="plus" width="16"></i>
+                        </button>
+                    </div>
+                    <div>${listHtml || '<div class="text-center text-slate-500 text-sm mt-8">目前無備案</div>'}</div>
+                `;
+            },
+
+            renderRecommend(container) {
+                const cardsHtml = CONSTANTS.RECOMMEND_SPOTS.map(spot => `
+                    <div class="bg-slate-800 rounded-lg p-3 border border-slate-700 flex justify-between items-center hover:border-slate-500 transition-colors">
+                        <div>
+                            <div class="font-bold text-sm text-slate-200">${spot.title}</div>
+                            <div class="text-[10px] text-blue-400 bg-blue-900/30 px-1.5 py-0.5 rounded inline-block mt-1">${spot.tag}</div>
+                        </div>
+                        <button onclick="App.addRecommendToBackup('${spot.title}', '${spot.tag}')" class="bg-slate-700 hover:bg-blue-600 text-white p-1.5 rounded transition-colors">
+                            <i data-lucide="plus" width="14"></i>
+                        </button>
+                    </div>
+                `).join('');
+
+                container.innerHTML = `<div class="grid grid-cols-2 gap-3">${cardsHtml}</div>`;
+            },
+
+            renderSplit(container) {
+                const isTwd = State.splitCurrency === 'TWD';
+                
+                // 付款人按鈕生成
+                const payerButtons = State.users.map(u => {
+                    const isSelected = State.splitPayer === u.id;
+                    const styleClass = isSelected ? `${u.color} text-white` : 'bg-slate-700 text-slate-400 hover:bg-slate-600';
+                    return `<button onclick="App.setSplitPayer('${u.id}')" class="px-3 py-2 rounded text-xs whitespace-nowrap transition-colors ${styleClass}">${u.name}</button>`;
+                }).join('');
+
+                // 分攤對象按鈕生成
+                const targetButtons = State.users.map(u => {
+                    const isSelected = State.splitTargets.includes(u.id);
+                    const styleClass = isSelected ? `bg-slate-600 text-white border-amber-500` : `bg-slate-700 text-slate-500 border-transparent hover:border-slate-500`;
+                    return `<button onclick="App.toggleSplitTarget('${u.id}')" class="py-2 rounded text-xs border transition-all ${styleClass}">${u.name} ${isSelected ? '✓' : ''}</button>`;
+                }).join('');
+                
+                container.innerHTML = `
+                    <div class="bg-slate-800 rounded-xl p-5 border border-slate-700 shadow-lg">
+                        <div class="flex gap-2 mb-4">
+                            <input type="number" id="split-input" value="${State.splitAmount}" oninput="App.updateSplitCalc(this.value)" class="w-2/3 bg-slate-900 border border-slate-600 rounded p-3 text-xl text-center text-white outline-none focus:border-amber-500 transition-colors" placeholder="輸入總金額">
+                            <div class="w-1/3 flex bg-slate-900 rounded border border-slate-600 p-1">
+                                <button onclick="App.setSplitCurrency('JPY')" class="flex-1 rounded text-xs transition-colors ${!isTwd ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}">日幣</button>
+                                <button onclick="App.setSplitCurrency('TWD')" class="flex-1 rounded text-xs transition-colors ${isTwd ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}">台幣</button>
+                            </div>
+                        </div>
+                        
+                        <div class="space-y-4">
+                            <div>
+                                <div class="text-xs text-slate-400 mb-2 font-medium">誰先墊錢？ (付款人)</div>
+                                <div class="flex gap-2 overflow-x-auto pb-1 hide-scrollbar">${payerButtons}</div>
+                            </div>
+                            <div>
+                                <div class="text-xs text-slate-400 mb-2 font-medium">誰要付錢？ (分攤對象)</div>
+                                <div class="grid grid-cols-2 gap-2">${targetButtons}</div>
+                            </div>
+                        </div>
+                        
+                        <div id="split-result" class="mt-6 border-t border-slate-700 pt-4">
+                            <!-- 由 App.updateSplitCalc 動態更新 -->
+                        </div>
+                    </div>
+                `;
+                
+                // 觸發初始計算
+                App.updateSplitCalc(State.splitAmount);
+            },
+
+            renderAccounting(container) {
+                // 1. 計算總結
+                const totalJpy = State.expenses.reduce((sum, item) => sum + item.amount, 0);
+                const totalTwd = Math.round(totalJpy / State.rate);
+                
+                const usersHtml = State.users.map(u => `
+                    <div class="flex flex-col items-center">
+                        <div class="w-8 h-8 rounded-full ${u.color} flex items-center justify-center text-white font-bold text-xs shadow">
+                            ${u.name[0]}
+                        </div>
+                        <div class="text-[10px] mt-1 text-slate-400">${u.name}</div>
+                    </div>
+                `).join('');
+                
+                // 2. 輸入表單分類
+                const isJpy = State.tempExpCurr === 'JPY';
+                const catsHtml = CONSTANTS.EXPENSE_CATEGORIES.map(cat => `
+                    <button onclick="App.setExpCat('${cat.id}')" class="flex flex-col items-center gap-1 p-2 rounded transition-all ${State.tempExpCat === cat.id ? 'bg-slate-700 ring-1 ring-emerald-500' : 'hover:bg-slate-700/50'}">
+                        <div class="${cat.color} text-white p-1.5 rounded-full shadow-sm">
+                            <i data-lucide="${cat.icon}" width="14"></i>
+                        </div>
+                        <span class="text-[10px] text-slate-400">${cat.name}</span>
+                    </button>
+                `).join('');
+
+                // 3. 帳目列表
+                const listHtml = State.expenses.map(exp => {
+                    const user = State.users.find(u => u.id === exp.userId) || CONSTANTS.DEFAULT_USERS[0];
+                    const cat = CONSTANTS.EXPENSE_CATEGORIES.find(c => c.id === exp.cat) || CONSTANTS.EXPENSE_CATEGORIES[0];
+                    const isExpanded = State.expandedExpId === exp.id;
+                    
+                    return `
+                        <div onclick="App.toggleExpandExpense('${exp.id}')" class="bg-slate-800 border-l-4 ${user.border} rounded mb-2 overflow-hidden shadow-sm hover:bg-slate-700/80 transition-colors cursor-pointer">
+                            <div class="p-3 flex items-center gap-3">
+                                <div class="${cat.color} p-2 rounded-full text-white shadow-sm">
+                                    <i data-lucide="${cat.icon}" width="16"></i>
+                                </div>
+                                <div class="flex-1">
+                                    <div class="flex justify-between items-center">
+                                        <span class="text-sm font-bold text-slate-200">${exp.note || cat.name}</span>
+                                        <span class="font-mono text-white font-bold">¥${exp.amount.toLocaleString()}</span>
+                                    </div>
+                                    <div class="text-[10px] text-slate-500 flex justify-between mt-1">
+                                        <span class="bg-slate-900/50 px-1.5 py-0.5 rounded">${user.name}</span>
+                                        <span>約 NT$${Math.round(exp.amount / State.rate).toLocaleString()}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            ${isExpanded ? `
+                                <div class="bg-slate-900/50 p-2 text-right border-t border-slate-700/50">
+                                    <button onclick="event.stopPropagation(); App.deleteExpense('${exp.id}')" class="text-xs text-red-400 hover:text-red-300 flex items-center justify-end gap-1 ml-auto">
+                                        <i data-lucide="trash-2" width="12"></i> 刪除此筆
+                                    </button>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('');
+
+                container.innerHTML = `
+                    <!-- 總結卡片 -->
+                    <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 mb-5 shadow-lg">
+                        <div class="text-center">
+                            <div class="text-3xl font-bold text-white tracking-wider">¥${totalJpy.toLocaleString()}</div>
+                            <div class="text-xs text-slate-400 mt-1">折合台幣約 NT$ ${totalTwd.toLocaleString()}</div>
+                        </div>
+                        <div class="grid grid-cols-4 gap-2 mt-5 border-t border-slate-700 pt-4">
+                            ${usersHtml}
+                        </div>
+                    </div>
+                    
+                    <!-- 記帳表單 -->
+                    <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 mb-5 shadow-lg">
+                        <div class="flex gap-2 mb-3">
+                            <div class="w-2/3 relative">
+                                <input type="number" id="amt-in" value="${State.formAmount}" oninput="App.syncAmount(this.value)" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-lg outline-none focus:border-emerald-500 transition-colors" placeholder="0">
+                                <span class="absolute right-3 top-3 text-xs text-slate-500 font-bold">${State.tempExpCurr}</span>
+                            </div>
+                            <div class="w-1/3 flex bg-slate-900 rounded border border-slate-600 p-1">
+                                <button onclick="App.setExpCurr('JPY')" class="flex-1 text-xs rounded transition-colors ${isJpy ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}">日幣</button>
+                                <button onclick="App.setExpCurr('TWD')" class="flex-1 text-xs rounded transition-colors ${!isJpy ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}">台幣</button>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-6 gap-1 mb-4 bg-slate-900/50 p-1 rounded-lg">
+                            ${catsHtml}
+                        </div>
+                        <div class="flex gap-2">
+                            <input id="note-in" value="${State.formNote}" oninput="App.syncNote(this.value)" placeholder="輸入備註 (選填)" class="flex-1 bg-slate-900 border border-slate-600 rounded px-3 text-sm text-white outline-none focus:border-emerald-500 transition-colors">
+                            <button onclick="App.submitExpense(event)" class="bg-emerald-600 hover:bg-emerald-500 transition-colors text-white p-2.5 rounded shadow-lg">
+                                <i data-lucide="plus" width="20"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 列表區 -->
+                    <div class="pb-4">
+                        <h3 class="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider pl-1">帳目明細</h3>
+                        ${listHtml || '<div class="text-center text-slate-500 text-sm py-4">尚無記帳紀錄</div>'}
+                    </div>
+                `;
+            }
+        };
+
+        // ==========================================
+        // 5. 核心控制器 (Controller)
+        // ==========================================
+        window.App = {
+            init() {
+                // 初始化資料庫連線
+                if (DB.init()) {
+                    App.initListeners();
+                }
+
+                // 取得匯率
+                fetch('https://api.exchangerate-api.com/v4/latest/TWD')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data?.rates?.JPY) {
+                            State.rate = data.rates.JPY;
+                            View.renderHeader(); // 更新 UI 上的匯率依賴
+                        }
+                    })
+                    .catch(() => console.warn("匯率 API 載入失敗，使用預設匯率"));
+
+                App.fetchWeather();
+                App.renderAll();
+
+                // 處理 Loading 畫面
+                setTimeout(() => {
+                    const btn = document.getElementById('force-btn');
+                    if (btn) btn.classList.remove('hidden');
+                    App.forceStart();
+                }, 2000);
+            },
+
+            forceStart() {
+                const loader = document.getElementById('loading-screen');
+                if (loader) {
+                    loader.style.opacity = '0';
+                    setTimeout(() => loader.style.display = 'none', 500);
+                }
+                App.renderAll();
+            },
+
+            initListeners() {
+                if (!DB.refs.expenses) return;
+
+                // 記帳資料監聽 (不強制打斷使用者輸入)
+                DB.refs.expenses.orderBy("timestamp", "desc").onSnapshot(snapshot => { 
+                    State.expenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
+                    if (State.activeTab === 'accounting' && document.activeElement.tagName !== 'INPUT') {
+                        View.renderContent();
+                    }
+                    DB.updateConnectionStatus(true); 
+                }, () => DB.updateConnectionStatus(false));
+
+                // 行程資料監聽
+                DB.refs.itinerary.onSnapshot(snapshot => { 
+                    State.itineraryEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
+                    if (State.activeTab === 'itinerary') View.renderContent();
+                });
+
+                // 備案資料監聽
+                DB.refs.backup.orderBy("timestamp", "desc").onSnapshot(snapshot => { 
+                    State.backupEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); 
+                    if (State.activeTab === 'backup') View.renderContent();
+                });
+
+                // 使用者名單監聽
+                DB.refs.users.onSnapshot(snapshot => { 
+                    if (snapshot.exists) {
+                        State.users = snapshot.data().list;
+                        if (State.splitTargets.length === 0) {
+                            State.splitTargets = State.users.map(u => u.id);
+                        }
+                    } else {
+                        DB.refs.users.set({ list: CONSTANTS.DEFAULT_USERS });
+                    }
+                    if (State.activeTab === 'accounting' || State.activeTab === 'split') {
+                        View.renderContent();
+                    }
+                });
+            },
+
+            async fetchWeather() {
+                try {
+                    const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=26.2124&longitude=127.6809&current=temperature_2m,weather_code&timezone=Asia%2FTokyo");
+                    const data = await res.json();
+                    if (data.current) {
+                        const widget = document.getElementById('weather-widget');
+                        if (widget) {
+                            widget.innerHTML = `<i data-lucide="sun" width="14" class="text-yellow-400"></i> 那霸 ${data.current.temperature_2m}°C`;
+                            widget.classList.remove('hidden');
+                            if (window.lucide) lucide.createIcons();
+                        }
+                    }
+                } catch (e) { console.warn("天氣 API 載入失敗"); }
+            },
+
+            renderAll() {
+                View.renderHeader();
+                View.renderBottomNav();
+                View.renderContent();
+            },
+
+            // --- 導覽與 UI 互動 ---
+            switchTab(tabId) {
+                State.activeTab = tabId;
+                this.renderAll();
+            },
+
+            toggleConverter() {
+                const panel = document.getElementById('converter-panel');
+                if (panel) panel.classList.toggle('hidden');
+            },
+
+            convertCurrency(type) {
+                const inputJpy = document.getElementById('conv-jpy');
+                const inputTwd = document.getElementById('conv-twd');
+                if (!inputJpy || !inputTwd) return;
+
+                if (type === 'jpy') {
+                    inputTwd.value = inputJpy.value ? Math.round(inputJpy.value / State.rate) : '';
+                } else {
+                    inputJpy.value = inputTwd.value ? Math.round(inputTwd.value * State.rate) : '';
+                }
+            },
+
+            // --- 行程功能 ---
+            showAddItinModal(dayIndex) {
+                const time = prompt("請輸入時間 (例如: 10:00)");
+                if (!time) return;
+                const title = prompt("請輸入行程標題");
+                if (!title) return;
+                const note = prompt("請輸入備註 (選填)");
+                
+                if (DB.refs.itinerary) {
+                    DB.refs.itinerary.add({
+                        dayIndex: dayIndex,
+                        time: time,
+                        title: title,
+                        note: note || '',
+                        cost: '',
+                        mapUrl: title,
+                        imgKey: 'default',
+                        timestamp: Date.now()
+                    });
+                }
+            },
+
+            async deleteItinerary(id) {
+                if (confirm("確定要刪除這個行程嗎？")) {
+                    await DB.refs.itinerary.doc(id).delete();
+                }
+            },
+
+            async uploadDefaultItinerary() {
+                if (!confirm("此動作將新增預設行程，確定要上傳嗎？")) return;
+                
+                if (DB.refs.itinerary) {
+                    const batch = firebase.firestore().batch();
+                    CONSTANTS.DEFAULT_ITINERARY_EVENTS.forEach(day => {
+                        day.events.forEach(event => {
+                            const newRef = DB.refs.itinerary.doc();
+                            batch.set(newRef, { ...event, dayIndex: day.dayIndex, timestamp: Date.now() });
+                        });
+                    });
+                    await batch.commit();
+                    alert("預設行程上傳成功！");
+                }
+            },
+
+            // --- 備案功能 ---
+            submitBackup() {
+                const titleInput = document.getElementById('bk-title');
+                const noteInput = document.getElementById('bk-note');
+                
+                if (titleInput && titleInput.value.trim()) {
+                    if (DB.refs.backup) {
+                        DB.refs.backup.add({
+                            title: titleInput.value.trim(),
+                            tag: '自訂',
+                            note: noteInput ? noteInput.value.trim() : '',
+                            timestamp: Date.now()
+                        });
+                        // 清空輸入框
+                        titleInput.value = '';
+                        if (noteInput) noteInput.value = '';
+                    }
+                }
+            },
+
+            async deleteBackup(id) {
+                if (confirm("確定刪除此備案？")) {
+                    await DB.refs.backup.doc(id).delete();
+                }
+            },
+
+            addRecommendToBackup(title, tag) {
+                if (DB.refs.backup) {
+                    DB.refs.backup.add({
+                        title: title,
+                        tag: tag,
+                        note: '來自推薦',
+                        timestamp: Date.now()
+                    });
+                    alert(`已將「${title}」加入備案區！`);
+                }
+            },
+
+            // --- 記帳功能 ---
+            syncAmount(val) { State.formAmount = val; },
+            syncNote(val) { State.formNote = val; },
+            setExpCat(catId) { State.tempExpCat = catId; View.renderContent(); },
+            setExpCurr(currency) { State.tempExpCurr = currency; View.renderContent(); },
+            toggleExpandExpense(id) { State.expandedExpId = State.expandedExpId === id ? null : id; View.renderContent(); },
+            
+            async submitExpense(e) {
+                if (e) e.preventDefault();
+                const amtStr = State.formAmount;
+                const note = State.formNote;
+                
+                if (!amtStr) { alert("請輸入金額！"); return; }
+                
+                let val = parseFloat(amtStr);
+                // 若輸入為台幣，轉換為日幣儲存
+                if (State.tempExpCurr === 'TWD') {
+                    val = Math.round(val * State.rate);
+                }
+
+                if (DB.refs.expenses) {
+                    await DB.refs.expenses.add({
+                        amount: val,
+                        cat: State.tempExpCat,
+                        note: note,
+                        userId: State.selectedUser,
+                        timestamp: Date.now()
+                    });
+                    // 重置表單狀態
+                    State.formAmount = '';
+                    State.formNote = '';
+                    View.renderContent();
+                }
+            },
+
+            async deleteExpense(id) {
+                if (confirm("確定刪除此筆記帳紀錄？")) {
+                    await DB.refs.expenses.doc(id).delete();
+                }
+            },
+
+            // --- 分帳功能 ---
+            setSplitCurrency(currency) { 
+                State.splitCurrency = currency; 
+                View.renderContent(); 
+            },
+            
+            setSplitPayer(userId) { 
+                State.splitPayer = userId; 
+                if (!State.splitTargets.includes(userId)) {
+                    State.splitTargets.push(userId); 
+                }
+                View.renderContent(); 
+            },
+            
+            toggleSplitTarget(userId) { 
+                const idx = State.splitTargets.indexOf(userId); 
+                if (idx > -1) {
+                    State.splitTargets.splice(idx, 1); 
+                } else {
+                    State.splitTargets.push(userId); 
+                }
+                View.renderContent();
+                
+                // 保持 Input 焦點
+                setTimeout(() => {
+                    const inp = document.getElementById('split-input');
+                    if (inp) {
+                        inp.value = State.splitAmount; 
+                        inp.focus(); 
+                    }
+                }, 50);
+            },
+
+            updateSplitCalc(val) {
+                State.splitAmount = val;
+                const resultDiv = document.getElementById('split-result');
+                if (!resultDiv) return;
+
+                const amount = parseFloat(val);
+                if (amount && State.splitTargets.length > 0) {
+                    const perPerson = Math.round(amount / State.splitTargets.length);
+                    const symbol = State.splitCurrency === 'TWD' ? 'NT$' : '¥';
+                    
+                    resultDiv.innerHTML = `
+                        <div class="bg-slate-900/50 rounded-lg p-4 mb-4">
+                            <div class="text-center text-sm text-slate-400 mb-1">平均每人負擔</div>
+                            <div class="text-center text-4xl font-bold text-amber-400 tracking-wider">
+                                ${symbol} ${perPerson.toLocaleString()}
+                            </div>
+                        </div>
+                        <button onclick="App.submitSplit(${perPerson})" class="w-full bg-amber-600 hover:bg-amber-500 transition-colors text-white py-3 rounded-lg font-bold shadow-lg flex items-center justify-center gap-2">
+                            <i data-lucide="check-circle" width="18"></i> 將總額寫入記帳
+                        </button>
+                    `;
+                    if (window.lucide) lucide.createIcons();
+                } else {
+                    resultDiv.innerHTML = `<div class="text-center text-slate-500 py-6 border border-dashed border-slate-700 rounded-lg bg-slate-800/50">請輸入總金額與分攤人...</div>`;
+                }
+            },
+
+            submitSplit(perPersonAmount) {
+                if (confirm('確定將此筆分帳寫入雲端記帳嗎？')) {
+                    const targetsNames = State.users
+                        .filter(u => State.splitTargets.includes(u.id))
+                        .map(u => u.name)
+                        .join(', ');
+                        
+                    let totalVal = parseFloat(State.splitAmount);
+                    let symbol = State.splitCurrency === 'TWD' ? 'NT$' : '¥';
+                    let note = `分帳: 總${symbol}${totalVal} (${targetsNames}平分)`;
+                    
+                    // 統一轉換為日幣寫入資料庫
+                    if (State.splitCurrency === 'TWD') {
+                        totalVal = Math.round(totalVal * State.rate);
+                    }
+                    
+                    if (DB.refs.expenses) {
+                        DB.refs.expenses.add({
+                            amount: totalVal,
+                            cat: 'food', // 預設為餐飲，可優化讓使用者選
+                            note: note,
+                            userId: State.splitPayer,
+                            timestamp: Date.now()
+                        });
+                        State.splitAmount = ''; 
+                        alert("分帳寫入完成！"); 
+                        App.switchTab('accounting');
+                    }
+                }
+            },
+
+            // --- 匯出功能 ---
+            exportCSV() {
+                if (State.expenses.length === 0) {
+                    alert("目前沒有記帳資料可以匯出");
+                    return;
+                }
+                
+                // 加入 BOM 解決 Excel 中文亂碼
+                let csvContent = "\uFEFF日期,付款人,類別,日幣金額,折合台幣(約),備註\n";
+                
+                State.expenses.forEach(exp => {
+                    const date = new Date(exp.timestamp).toLocaleDateString();
+                    const userName = State.users.find(u => u.id === exp.userId)?.name || '未知';
+                    const catName = CONSTANTS.EXPENSE_CATEGORIES.find(c => c.id === exp.cat)?.name || '其他';
+                    const twdAmount = Math.round(exp.amount / State.rate);
+                    // 處理備註中的逗號，避免破壞 CSV 格式
+                    const safeNote = `"${(exp.note || '').replace(/"/g, '""')}"`;
+                    
+                    csvContent += `${date},${userName},${catName},${exp.amount},${twdAmount},${safeNote}\n`;
+                });
+                
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob); 
+                link.download = "okinawa_2026_expenses.csv";
+                document.body.appendChild(link); 
+                link.click(); 
+                document.body.removeChild(link);
+            }
+        };
+
+        // 綁定初始化事件
+        document.addEventListener('DOMContentLoaded', App.init);
+    </script>
+</body>
+</html>
+
